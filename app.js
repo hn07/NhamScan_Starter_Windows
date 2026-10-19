@@ -195,18 +195,27 @@ $("#takePhoto").onclick=async()=>{
 };
 $("#finishCamera").onclick=()=>{closeCamera();refreshWorkspace();status("Đã hoàn tất "+state.pages.length+" trang");toast(state.pages.length?"Đã giữ lại "+state.pages.length+" trang":"Chưa có trang nào được chụp")};
 function pdfFileName(){let name=($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_");if(!name.toLowerCase().endsWith(".pdf"))name+=".pdf";return name}
+function optimizeCanvasForPdf(input,maxSide=2400){
+ const scale=Math.min(1,maxSide/Math.max(input.width,input.height));
+ if(scale===1)return input;
+ const out=document.createElement("canvas");out.width=Math.max(1,Math.round(input.width*scale));out.height=Math.max(1,Math.round(input.height*scale));
+ const x=out.getContext("2d");x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(input,0,0,out.width,out.height);return out;
+}
 async function buildPdfBlob(){
  if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");
  const {jsPDF}=window.jspdf;let pdf;
  for(let i=0;i<state.pages.length;i++){
-  const c=filteredCanvas(state.pages[i]),orientation=c.width>c.height?"landscape":"portrait";
+  const filtered=filteredCanvas(state.pages[i]);
+  // Limit oversized phone photos to a practical scan resolution and JPEG-compress for a much smaller PDF.
+  const c=optimizeCanvasForPdf(filtered,2400),orientation=c.width>c.height?"landscape":"portrait";
   if(!pdf)pdf=new jsPDF({orientation,unit:"pt",format:"a4",compress:true});
   else pdf.addPage("a4",orientation);
   const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=12;
   const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
   const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
-  // PNG avoids JPEG re-compression. Keep source canvas at native resolution.
-  pdf.addImage(c.toDataURL("image/png"),"PNG",x,y,w,h,undefined,"NONE");
+  // JPEG at 0.76 quality is a practical size/readability balance for document scans.
+  // Original page canvases remain untouched; compression is applied only to the PDF export copy.
+  pdf.addImage(c.toDataURL("image/jpeg",0.76),"JPEG",x,y,w,h,undefined,"FAST");
  }
  return pdf.output("blob");
 }
