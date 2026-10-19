@@ -17,7 +17,7 @@ function waitForOpenCV(timeout=15000){
  return cvReadyPromise;
 }
 function orderCorners(points){
- const sum=p=>p.x+p.y,diff=p=>p.x-p.y;
+ const sum=p=>p.x+p.y,diff=p=>p.y-p.x;
  return [points.reduce((a,b)=>sum(a)<sum(b)?a:b),points.reduce((a,b)=>diff(a)<diff(b)?a:b),points.reduce((a,b)=>sum(a)>sum(b)?a:b),points.reduce((a,b)=>diff(a)>diff(b)?a:b)];
 }
 async function autoCropDocument(inputCanvas){
@@ -46,7 +46,7 @@ async function autoCropDocument(inputCanvas){
    const area=Math.abs(cv.contourArea(approx));
    if(approx.rows===4&&cv.isContourConvex(approx)&&area>small.cols*small.rows*.12&&area>bestArea){
     const pts=[];for(let j=0;j<4;j++)pts.push({x:approx.data32S[j*2]/detectScale,y:approx.data32S[j*2+1]/detectScale});
-    best=pts;bestArea=area/(detectScale*detectScale);
+    best=pts;bestArea=area;
    }
    contour.delete();approx.delete();
   }
