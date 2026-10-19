@@ -3,8 +3,68 @@ const $ = s => document.querySelector(s);
 const state = { pages: [], active: -1, stream: null };
 const preview = $("#preview"), ctx = preview.getContext("2d");
 let toastTimer;
+let cvReadyPromise;
 function toast(message){const el=$("#toast");el.textContent=message;el.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.hidden=true,2600)}
 function status(message){$("#status").textContent=message}
+function waitForOpenCV(timeout=15000){
+ if(window.cv && window.cv.Mat && window.cv.findContours)return Promise.resolve(true);
+ if(cvReadyPromise)return cvReadyPromise;
+ cvReadyPromise=new Promise(resolve=>{
+  const started=Date.now();
+  const check=()=>{if(window.cv&&window.cv.Mat&&window.cv.findContours)resolve(true);else if(Date.now()-started>timeout)resolve(false);else setTimeout(check,100)};
+  check();
+ });
+ return cvReadyPromise;
+}
+function orderCorners(points){
+ const sum=p=>p.x+p.y,diff=p=>p.x-p.y;
+ return [points.reduce((a,b)=>sum(a)<sum(b)?a:b),points.reduce((a,b)=>diff(a)<diff(b)?a:b),points.reduce((a,b)=>sum(a)>sum(b)?a:b),points.reduce((a,b)=>diff(a)>diff(b)?a:b)];
+}
+async function autoCropDocument(inputCanvas){
+ // Keep image sizes practical for mobile browsers while retaining scan quality.
+ const maxSide=1800, scale=Math.min(1,maxSide/Math.max(inputCanvas.width,inputCanvas.height));
+ const source=document.createElement("canvas");source.width=Math.round(inputCanvas.width*scale);source.height=Math.round(inputCanvas.height*scale);
+ source.getContext("2d").drawImage(inputCanvas,0,0,source.width,source.height);
+ const ready=await waitForOpenCV();
+ if(!ready)return {canvas:source,cropped:false,reason:"Không tải được bộ nhận diện mép giấy"};
+ let src,small,gray,blur,edges,contours,hierarchy,kernel;
+ try{
+  src=cv.imread(source);
+  const detectScale=Math.min(1,1000/Math.max(source.width,source.height));
+  small=new cv.Mat();cv.resize(src,small,new cv.Size(Math.round(src.cols*detectScale),Math.round(src.rows*detectScale)));
+  gray=new cv.Mat();blur=new cv.Mat();edges=new cv.Mat();contours=new cv.MatVector();hierarchy=new cv.Mat();
+  cv.cvtColor(small,gray,cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
+  cv.Canny(blur,edges,50,150);
+  kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3));
+  cv.dilate(edges,edges,kernel);
+  cv.findContours(edges,contours,hierarchy,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  let best=null,bestArea=0;
+  for(let i=0;i<contours.size();i++){
+   const contour=contours.get(i),per=cv.arcLength(contour,true),approx=new cv.Mat();
+   cv.approxPolyDP(contour,approx,.02*per,true);
+   const area=Math.abs(cv.contourArea(approx));
+   if(approx.rows===4&&cv.isContourConvex(approx)&&area>small.cols*small.rows*.12&&area>bestArea){
+    const pts=[];for(let j=0;j<4;j++)pts.push({x:approx.data32S[j*2]/detectScale,y:approx.data32S[j*2+1]/detectScale});
+    best=pts;bestArea=area/(detectScale*detectScale);
+   }
+   contour.delete();approx.delete();
+  }
+  if(!best)return {canvas:source,cropped:false,reason:"Chưa nhận diện rõ bốn mép giấy"};
+  const [tl,tr,br,bl]=orderCorners(best);
+  const dist=(p1,p2)=>Math.hypot(p1.x-p2.x,p1.y-p2.y);
+  const width=Math.round(Math.max(dist(tl,tr),dist(bl,br))),height=Math.round(Math.max(dist(tl,bl),dist(tr,br)));
+  if(width<100||height<100)return {canvas:source,cropped:false,reason:"Vùng giấy nhận diện quá nhỏ"};
+  const from=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
+  const to=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,width-1,0,width-1,height-1,0,height-1]);
+  const transform=cv.getPerspectiveTransform(from,to),out=new cv.Mat();
+  cv.warpPerspective(src,out,transform,new cv.Size(width,height),cv.INTER_LINEAR,cv.BORDER_REPLICATE,new cv.Scalar());
+  const result=document.createElement("canvas");result.width=out.cols;result.height=out.rows;cv.imshow(result,out);
+  from.delete();to.delete();transform.delete();out.delete();
+  return {canvas:result,cropped:true};
+ }catch(err){console.warn("Auto-crop failed",err);return {canvas:source,cropped:false,reason:"Không thể tự cắt mép giấy"}}
+ finally{[src,small,gray,blur,edges,contours,hierarchy,kernel].forEach(m=>{try{if(m)m.delete()}catch(_){}})}
+}
 function filteredCanvas(page){
  const source=page.canvas, c=document.createElement("canvas");c.width=source.width;c.height=source.height;
  const x=c.getContext("2d"), filter=page.filter||"color";
@@ -33,7 +93,7 @@ function addCanvas(canvas,name="Trang"){
  state.pages.push({canvas,filter:"color",name});state.active=state.pages.length-1;
 }
 function imageToCanvas(file){return new Promise((resolve,reject)=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const scale=Math.min(1,2200/Math.max(img.naturalWidth,img.naturalHeight)),c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*scale);c.height=Math.round(img.naturalHeight*scale);c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);resolve(c)};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Không đọc được ảnh"))};img.src=url})}
-async function importFiles(files){const images=[...files].filter(f=>f.type.startsWith("image/"));if(!images.length)return;status("Đang thêm ảnh…");let added=0;for(const f of images){try{addCanvas(await imageToCanvas(f),f.name);added++}catch(e){console.error(e)}}refreshWorkspace();status("Đã thêm "+added+" trang");toast("Đã thêm "+added+" trang")}
+async function importFiles(files){const images=[...files].filter(f=>f.type.startsWith("image/"));if(!images.length)return;status("Đang thêm ảnh…");let added=0;for(const f of images){try{const original=await imageToCanvas(f),result=await autoCropDocument(original);addCanvas(result.canvas,f.name);added++;if(!result.cropped)console.info(result.reason)}catch(e){console.error(e)}}refreshWorkspace();status("Đã thêm "+added+" trang");toast("Đã thêm "+added+" trang")}
 $("#fileInput").onchange=e=>{importFiles(e.target.files);e.target.value=""};
 $("#addInput").onchange=e=>{importFiles(e.target.files);e.target.value=""};
 $("#prevPage").onclick=()=>showPage(state.active-1);$("#nextPage").onclick=()=>showPage(state.active+1);
@@ -48,12 +108,13 @@ async function openCamera(){
 function closeCamera(){if(state.stream){state.stream.getTracks().forEach(t=>t.stop());state.stream=null}$("#video").srcObject=null;$("#cameraModal").hidden=true}
 $("#cameraBtn").onclick=openCamera;
 $("#closeCamera").onclick=()=>{closeCamera();if(state.pages.length)refreshWorkspace()};
-$("#takePhoto").onclick=()=>{
+$("#takePhoto").onclick=async()=>{
  const video=$("#video");if(!video.videoWidth){toast("Camera đang khởi động, vui lòng thử lại");return}
  const c=document.createElement("canvas");c.width=video.videoWidth;c.height=video.videoHeight;c.getContext("2d").drawImage(video,0,0,c.width,c.height);
- addCanvas(c,"Camera "+state.pages.length);$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";
+ $("#takePhoto").disabled=true;$("#takePhoto").textContent="Đang căn mép giấy…";
+ const result=await autoCropDocument(c);addCanvas(result.canvas,"Camera "+state.pages.length);$("#takePhoto").disabled=false;$("#takePhoto").textContent="◎ Chụp trang";$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";
  status("Đã chụp "+state.pages.length+" trang");refreshWorkspace();$("#cameraModal").hidden=false;
- toast("Đã chụp trang "+state.pages.length+" — tiếp tục chụp trang kế tiếp");
+ toast(result.cropped?"Đã tự căn và cắt mép giấy — tiếp tục chụp":"Chưa nhận diện được mép giấy, giữ ảnh gốc — thử đặt giấy trên nền tương phản");
 };
 $("#finishCamera").onclick=()=>{closeCamera();refreshWorkspace();status("Đã hoàn tất "+state.pages.length+" trang");toast(state.pages.length?"Đã giữ lại "+state.pages.length+" trang":"Chưa có trang nào được chụp")};
 $("#savePdf").onclick=async()=>{
