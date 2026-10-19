@@ -303,6 +303,12 @@ $("#sharePdf").onclick=async()=>{
   else{console.error(e);status("Không thể chia sẻ PDF");toast(e.message||"Không thể chia sẻ PDF")}
  }finally{btn.disabled=!state.pages.length}
 };
+const exportMenu=$("#exportMenu"),menuToggle=$("#menuToggle");
+function closeExportMenu(){exportMenu.classList.remove("open");menuToggle.setAttribute("aria-expanded","false")}
+menuToggle.onclick=()=>{const open=exportMenu.classList.toggle("open");menuToggle.setAttribute("aria-expanded",String(open))};
+document.addEventListener("click",e=>{if(!exportMenu.contains(e.target))closeExportMenu()});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeExportMenu()});
+exportMenu.querySelectorAll(".export-menu-panel button").forEach(button=>button.addEventListener("click",()=>{if(!button.disabled&&window.matchMedia("(max-width: 700px)").matches)closeExportMenu()}));
 $("#helpBtn").onclick=()=>$("#helpModal").hidden=false;
 $("#closeHelp").onclick=$("#closeHelp2").onclick=()=>$("#helpModal").hidden=true;
 window.addEventListener("beforeunload",()=>{if(state.stream)state.stream.getTracks().forEach(t=>t.stop())});
