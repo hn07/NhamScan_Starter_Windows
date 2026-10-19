@@ -163,7 +163,7 @@ function showPage(i){
  $("#pageLabel").textContent="Trang "+(i+1)+" / "+state.pages.length;$("#imageSize").textContent=p.canvas.width+" × "+p.canvas.height+" px";$("#filter").value=p.filter||"color";renderPages();
 }
 function refreshWorkspace(){
- const has=state.pages.length>0;$("#welcome").hidden=has;$("#workspace").hidden=!has;$("#savePdf").disabled=!has;
+ const has=state.pages.length>0;$("#welcome").hidden=has;$("#workspace").hidden=!has;$("#savePdf").disabled=!has;$("#sharePdf").disabled=!has;
  if(has)showPage(Math.max(0,state.active));else renderPages();
 }
 function addCanvas(canvas,name="Trang",originalCanvas=canvas){
