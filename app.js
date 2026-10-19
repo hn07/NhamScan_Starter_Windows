@@ -76,7 +76,7 @@ async function autoCropDocument(inputCanvas){
   const from=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
   const to=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,width-1,0,width-1,height-1,0,height-1]);
   const transform=cv.getPerspectiveTransform(from,to),out=new cv.Mat();
-  cv.warpPerspective(src,out,transform,new cv.Size(width,height),cv.INTER_LINEAR,cv.BORDER_REPLICATE,new cv.Scalar());
+  cv.warpPerspective(src,out,transform,new cv.Size(width,height),cv.INTER_CUBIC,cv.BORDER_REPLICATE,new cv.Scalar());
   const result=document.createElement("canvas");result.width=out.cols;result.height=out.rows;cv.imshow(result,out);
   from.delete();to.delete();transform.delete();out.delete();
   return {canvas:result,cropped:true};
@@ -179,7 +179,7 @@ function rotate(degrees){const p=state.pages[state.active];if(!p)return;const ol
 $("#rotateLeft").onclick=()=>rotate(-90);$("#rotateRight").onclick=()=>rotate(90);
 $("#deletePage").onclick=()=>{if(state.active<0)return;state.pages.splice(state.active,1);state.active=Math.min(state.active,state.pages.length-1);refreshWorkspace();status("Đã xóa trang");toast("Đã xóa trang")};
 async function openCamera(){
- try{if(!navigator.mediaDevices?.getUserMedia)throw new Error("Trình duyệt không hỗ trợ camera");state.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});$("#video").srcObject=state.stream;$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";$("#cameraModal").hidden=false;await $("#video").play().catch(()=>{});}
+ try{if(!navigator.mediaDevices?.getUserMedia)throw new Error("Trình duyệt không hỗ trợ camera");state.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:3840},height:{ideal:2160},frameRate:{ideal:30,max:30}},audio:false});$("#video").srcObject=state.stream;$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";$("#cameraModal").hidden=false;await $("#video").play().catch(()=>{});}
  catch(e){console.error(e);toast("Không mở được camera. Chạy qua http://localhost:8080 và cho phép quyền camera.")}
 }
 function closeCamera(){if(state.stream){state.stream.getTracks().forEach(t=>t.stop());state.stream=null}$("#video").srcObject=null;$("#cameraModal").hidden=true}
@@ -194,21 +194,50 @@ $("#takePhoto").onclick=async()=>{
  toast(result.cropped?"Đã tự căn và cắt mép giấy — tiếp tục chụp":"Chưa nhận diện được mép giấy, giữ ảnh gốc — thử đặt giấy trên nền tương phản");
 };
 $("#finishCamera").onclick=()=>{closeCamera();refreshWorkspace();status("Đã hoàn tất "+state.pages.length+" trang");toast(state.pages.length?"Đã giữ lại "+state.pages.length+" trang":"Chưa có trang nào được chụp")};
-$("#savePdf").onclick=async()=>{
- if(!state.pages.length)return;
- try{if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");status("Đang tạo PDF…");$("#savePdf").disabled=true;
+function pdfFileName(){let name=($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_");if(!name.toLowerCase().endsWith(".pdf"))name+=".pdf";return name}
+async function buildPdfBlob(){
+ if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");
  const {jsPDF}=window.jspdf;let pdf;
  for(let i=0;i<state.pages.length;i++){
-   const c=filteredCanvas(state.pages[i]),orientation=c.width>c.height?"landscape":"portrait";
-   if(!pdf)pdf=new jsPDF({orientation,unit:"pt",format:"a4",compress:true});
-   else pdf.addPage("a4",orientation);
-   const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=22;
-   const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
-   const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
-   pdf.addImage(c.toDataURL("image/png"),"PNG",x,y,w,h,undefined,"NONE");
+  const c=filteredCanvas(state.pages[i]),orientation=c.width>c.height?"landscape":"portrait";
+  if(!pdf)pdf=new jsPDF({orientation,unit:"pt",format:"a4",compress:true});
+  else pdf.addPage("a4",orientation);
+  const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=12;
+  const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
+  const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
+  // PNG avoids JPEG re-compression. Keep source canvas at native resolution.
+  pdf.addImage(c.toDataURL("image/png"),"PNG",x,y,w,h,undefined,"NONE");
  }
- let name=($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_");if(!name.toLowerCase().endsWith(".pdf"))name+=".pdf";pdf.save(name);status("Đã lưu PDF gồm "+state.pages.length+" trang");toast("Đã lưu "+name+" ("+state.pages.length+" trang)");
+ return pdf.output("blob");
+}
+$("#savePdf").onclick=async()=>{
+ if(!state.pages.length)return;
+ try{status("Đang tạo PDF chất lượng cao…");$("#savePdf").disabled=true;
+ const blob=await buildPdfBlob(),name=pdfFileName(),url=URL.createObjectURL(blob),a=document.createElement("a");
+ a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+ status("Đã lưu PDF gồm "+state.pages.length+" trang");toast("Đã lưu "+name+" ("+state.pages.length+" trang)");
  }catch(e){console.error(e);status("Không thể tạo PDF");toast(e.message||"Lỗi xuất PDF")}finally{$("#savePdf").disabled=!state.pages.length}
+};
+$("#sharePdf").onclick=async()=>{
+ if(!state.pages.length)return;
+ const btn=$("#sharePdf");
+ try{
+  btn.disabled=true;status("Đang chuẩn bị PDF để chia sẻ…");
+  const blob=await buildPdfBlob(),name=pdfFileName();
+  const file=new File([blob],name,{type:"application/pdf"});
+  if(navigator.canShare&&navigator.canShare({files:[file]})&&navigator.share){
+   await navigator.share({files:[file],title:name,text:"Tài liệu được quét bằng NhamScan"});
+   status("Đã mở bảng chia sẻ");toast("Chọn Zalo trong bảng chia sẻ để gửi PDF");
+  }else{
+   const url=URL.createObjectURL(blob),a=document.createElement("a");
+   a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+   status("Đã tải PDF");toast("Thiết bị chưa hỗ trợ chia sẻ tệp trực tiếp. Mở Zalo và đính kèm PDF vừa tải.");
+   window.open("https://zalo.me/","_blank","noopener");
+  }
+ }catch(e){
+  if(e?.name==="AbortError"){status("Đã hủy chia sẻ");}
+  else{console.error(e);status("Không thể chia sẻ PDF");toast(e.message||"Không thể chia sẻ PDF")}
+ }finally{btn.disabled=!state.pages.length}
 };
 $("#helpBtn").onclick=()=>$("#helpModal").hidden=false;
 $("#closeHelp").onclick=$("#closeHelp2").onclick=()=>$("#helpModal").hidden=true;
