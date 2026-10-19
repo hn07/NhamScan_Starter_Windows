@@ -214,7 +214,7 @@ async function buildSinglePagePdfBlob(page){
  return pdf.output("blob");
 }
 function zipBaseName(){
- return ($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_").replace(/\\.pdf$/i,"")||"Tai_lieu_scan";
+ return ($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_").replace(/\.pdf$/i,"")||"Tai_lieu_scan";
 }
 async function buildPagesZip(){
  if(!window.JSZip)throw new Error("Không tải được thư viện ZIP. Kiểm tra kết nối Internet.");
