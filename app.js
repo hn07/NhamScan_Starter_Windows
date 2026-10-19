@@ -163,7 +163,7 @@ function showPage(i){
  $("#pageLabel").textContent="Trang "+(i+1)+" / "+state.pages.length;$("#imageSize").textContent=p.canvas.width+" × "+p.canvas.height+" px";$("#filter").value=p.filter||"color";renderPages();
 }
 function refreshWorkspace(){
- const has=state.pages.length>0;$("#welcome").hidden=has;$("#workspace").hidden=!has;$("#savePdf").disabled=!has;$("#sharePdf").disabled=!has;
+ const has=state.pages.length>0;$("#welcome").hidden=has;$("#workspace").hidden=!has;$("#savePdf").disabled=!has;$("#sharePdf").disabled=!has;$("#splitZip").disabled=!has;$("#shareZip").disabled=!has;
  if(has)showPage(Math.max(0,state.active));else renderPages();
 }
 function addCanvas(canvas,name="Trang",originalCanvas=canvas){
@@ -201,6 +201,61 @@ function optimizeCanvasForPdf(input,maxSide=2400){
  const out=document.createElement("canvas");out.width=Math.max(1,Math.round(input.width*scale));out.height=Math.max(1,Math.round(input.height*scale));
  const x=out.getContext("2d");x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";x.drawImage(input,0,0,out.width,out.height);return out;
 }
+async function buildSinglePagePdfBlob(page){
+ if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");
+ const {jsPDF}=window.jspdf;
+ const filtered=filteredCanvas(page),c=optimizeCanvasForPdf(filtered,2400);
+ const orientation=c.width>c.height?"landscape":"portrait";
+ const pdf=new jsPDF({orientation,unit:"pt",format:"a4",compress:true});
+ const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=12;
+ const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
+ const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
+ pdf.addImage(c.toDataURL("image/jpeg",0.76),"JPEG",x,y,w,h,undefined,"FAST");
+ return pdf.output("blob");
+}
+function zipBaseName(){
+ return ($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_").replace(/\\.pdf$/i,"")||"Tai_lieu_scan";
+}
+async function buildPagesZip(){
+ if(!window.JSZip)throw new Error("Không tải được thư viện ZIP. Kiểm tra kết nối Internet.");
+ const zip=new JSZip(),base=zipBaseName(),total=state.pages.length;
+ for(let i=0;i<total;i++){
+  status("Đang tạo PDF "+(i+1)+"/"+total+"…");
+  const blob=await buildSinglePagePdfBlob(state.pages[i]);
+  zip.file(base+"_"+String(i+1).padStart(2,"0")+".pdf",blob);
+ }
+ status("Đang đóng gói "+total+" PDF thành ZIP…");
+ return zip.generateAsync({type:"blob",compression:"DEFLATE",compressionOptions:{level:6}});
+}
+function downloadBlob(blob,name){
+ const url=URL.createObjectURL(blob),a=document.createElement("a");
+ a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
+$("#splitZip").onclick=async()=>{
+ if(!state.pages.length)return;
+ const btn=$("#splitZip");
+ try{
+  btn.disabled=true;const blob=await buildPagesZip(),name=zipBaseName()+"_PDF_tung_trang.zip";
+  downloadBlob(blob,name);status("Đã tạo "+state.pages.length+" PDF riêng trong ZIP");toast("Đã tải ZIP gồm "+state.pages.length+" file PDF");
+ }catch(e){console.error(e);status("Không thể tách PDF");toast(e.message||"Lỗi tạo ZIP")}
+ finally{btn.disabled=!state.pages.length}
+};
+$("#shareZip").onclick=async()=>{
+ if(!state.pages.length)return;
+ const btn=$("#shareZip");
+ try{
+  btn.disabled=true;const blob=await buildPagesZip(),name=zipBaseName()+"_PDF_tung_trang.zip";
+  const file=new File([blob],name,{type:"application/zip"});
+  if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+   await navigator.share({files:[file],title:name,text:"Các trang scan được tách thành từng file PDF"});
+   status("Đã mở bảng chia sẻ");toast("Chọn Zalo để gửi file ZIP chứa các PDF riêng");
+  }else{
+   downloadBlob(blob,name);status("Đã tải ZIP");toast("Thiết bị chưa hỗ trợ chia sẻ ZIP trực tiếp. Hãy đính kèm file ZIP vừa tải trong Zalo.");
+  }
+ }catch(e){if(e?.name==="AbortError"){status("Đã hủy chia sẻ")}else{console.error(e);status("Không thể chia sẻ ZIP");toast(e.message||"Lỗi chia sẻ ZIP")}}
+ finally{btn.disabled=!state.pages.length}
+};
 async function buildPdfBlob(){
  if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");
  const {jsPDF}=window.jspdf;let pdf;
