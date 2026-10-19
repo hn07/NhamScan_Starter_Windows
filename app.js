@@ -35,21 +35,39 @@ async function autoCropDocument(inputCanvas){
   gray=new cv.Mat();blur=new cv.Mat();edges=new cv.Mat();contours=new cv.MatVector();hierarchy=new cv.Mat();
   cv.cvtColor(small,gray,cv.COLOR_RGBA2GRAY);
   cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
-  cv.Canny(blur,edges,50,150);
-  kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3));
-  cv.dilate(edges,edges,kernel);
-  cv.findContours(edges,contours,hierarchy,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  // Try several edge/threshold strategies: paper edges may be faint or unevenly lit.
   let best=null,bestArea=0;
-  for(let i=0;i<contours.size();i++){
-   const contour=contours.get(i),per=cv.arcLength(contour,true),approx=new cv.Mat();
-   cv.approxPolyDP(contour,approx,.02*per,true);
-   const area=Math.abs(cv.contourArea(approx));
-   if(approx.rows===4&&cv.isContourConvex(approx)&&area>small.cols*small.rows*.12&&area>bestArea){
-    const pts=[];for(let j=0;j<4;j++)pts.push({x:approx.data32S[j*2]/detectScale,y:approx.data32S[j*2+1]/detectScale});
-    best=pts;bestArea=area;
+  const findCandidates=(mask,epsilonFactor)=>{
+   const found=new cv.MatVector(),hier=new cv.Mat();
+   cv.findContours(mask,found,hier,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+   for(let i=0;i<found.size();i++){
+    const contour=found.get(i),per=cv.arcLength(contour,true),approx=new cv.Mat();
+    cv.approxPolyDP(contour,approx,epsilonFactor*per,true);
+    const area=Math.abs(cv.contourArea(approx));
+    if(approx.rows===4&&cv.isContourConvex(approx)&&area>small.cols*small.rows*.15&&area>bestArea){
+     const pts=[];for(let j=0;j<4;j++)pts.push({x:approx.data32S[j*2]/detectScale,y:approx.data32S[j*2+1]/detectScale});
+     // Reject implausible shapes and candidates touching almost the entire image frame.
+     const ordered=orderCorners(pts),[a,b,d,e]=ordered;
+     const w=Math.max(Math.hypot(a.x-b.x,a.y-b.y),Math.hypot(e.x-d.x,e.y-d.y));
+     const h=Math.max(Math.hypot(a.x-e.x,a.y-e.y),Math.hypot(b.x-d.x,b.y-d.y));
+     const ratio=w/Math.max(1,h),frameRatio=area/(small.cols*small.rows);
+     if(ratio>.35&&ratio<1.8&&frameRatio<.97){best=pts;bestArea=area}
+    }
+    contour.delete();approx.delete();
    }
-   contour.delete();approx.delete();
-  }
+   found.delete();hier.delete();
+  };
+  cv.Canny(blur,edges,35,110);
+  kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
+  cv.morphologyEx(edges,edges,cv.MORPH_CLOSE,kernel);
+  findCandidates(edges,.018);
+  // Threshold contours help when paper and background have clear brightness contrast.
+  const thresh=new cv.Mat();
+  cv.threshold(blur,thresh,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+  findCandidates(thresh,.018);
+  cv.bitwise_not(thresh,thresh);
+  findCandidates(thresh,.018);
+  thresh.delete();
   if(!best)return {canvas:source,cropped:false,reason:"Chưa nhận diện rõ bốn mép giấy"};
   const [tl,tr,br,bl]=orderCorners(best);
   const dist=(p1,p2)=>Math.hypot(p1.x-p2.x,p1.y-p2.y);
