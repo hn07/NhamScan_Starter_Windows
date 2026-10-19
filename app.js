@@ -60,7 +60,15 @@ $("#savePdf").onclick=async()=>{
  if(!state.pages.length)return;
  try{if(!window.jspdf?.jsPDF)throw new Error("Không tải được thư viện PDF. Kiểm tra kết nối Internet.");status("Đang tạo PDF…");$("#savePdf").disabled=true;
  const {jsPDF}=window.jspdf;let pdf;
- for(let i=0;i<state.pages.length;i++){const c=filteredCanvas(state.pages[i]),orientation=c.width>c.height?"landscape":"portrait";if(!pdf)pdf=new jsPDF({orientation,unit:"pt",format:[c.width,c.height],compress:true});else pdf.addPage([c.width,c.height],orientation);pdf.addImage(c.toDataURL("image/jpeg",.93),"JPEG",0,0,c.width,c.height,undefined,"FAST");}
+ for(let i=0;i<state.pages.length;i++){
+   const c=filteredCanvas(state.pages[i]),orientation=c.width>c.height?"landscape":"portrait";
+   if(!pdf)pdf=new jsPDF({orientation,unit:"pt",format:"a4",compress:true});
+   else pdf.addPage("a4",orientation);
+   const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=22;
+   const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
+   const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
+   pdf.addImage(c.toDataURL("image/jpeg",.93),"JPEG",x,y,w,h,undefined,"FAST");
+ }
  let name=($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_");if(!name.toLowerCase().endsWith(".pdf"))name+=".pdf";pdf.save(name);status("Đã lưu PDF gồm "+state.pages.length+" trang");toast("Đã lưu "+name+" ("+state.pages.length+" trang)");
  }catch(e){console.error(e);status("Không thể tạo PDF");toast(e.message||"Lỗi xuất PDF")}finally{$("#savePdf").disabled=!state.pages.length}
 };
