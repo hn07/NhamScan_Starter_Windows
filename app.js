@@ -22,9 +22,9 @@ function orderCorners(points){
 }
 async function autoCropDocument(inputCanvas){
  // Keep image sizes practical for mobile browsers while retaining scan quality.
- const maxSide=1800, scale=Math.min(1,maxSide/Math.max(inputCanvas.width,inputCanvas.height));
- const source=document.createElement("canvas");source.width=Math.round(inputCanvas.width*scale);source.height=Math.round(inputCanvas.height*scale);
- source.getContext("2d").drawImage(inputCanvas,0,0,source.width,source.height);
+ // Preserve the full input resolution; only the detection copy is reduced.
+ const source=document.createElement("canvas");source.width=inputCanvas.width;source.height=inputCanvas.height;
+ source.getContext("2d",{willReadFrequently:true}).drawImage(inputCanvas,0,0);
  const ready=await waitForOpenCV();
  if(!ready)return {canvas:source,cropped:false,reason:"Không tải được bộ nhận diện mép giấy"};
  let src,small,gray,blur,edges,contours,hierarchy,kernel;
@@ -83,6 +83,65 @@ async function autoCropDocument(inputCanvas){
  }catch(err){console.warn("Auto-crop failed",err);return {canvas:source,cropped:false,reason:"Không thể tự cắt mép giấy"}}
  finally{[src,small,gray,blur,edges,contours,hierarchy,kernel].forEach(m=>{try{if(m)m.delete()}catch(_){}})}
 }
+
+// Manual four-corner crop editor. Coordinates are stored in full-resolution source pixels.
+let cropPage=null,cropPoints=[],dragPoint=-1,cropDisplay={scale:1,ox:0,oy:0,w:0,h:0};
+const cropCanvas=$("#cropCanvas"),cropCtx=cropCanvas.getContext("2d");
+function drawCropEditor(){
+ if(!cropPage)return;
+ const src=cropPage.originalCanvas||cropPage.canvas,stage=$("#cropStage");
+ const rect=stage.getBoundingClientRect(),dpr=Math.min(window.devicePixelRatio||1,2);
+ const maxW=Math.max(220,rect.width-16),maxH=Math.max(260,window.innerHeight*.55);
+ const scale=Math.min(maxW/src.width,maxH/src.height,1);
+ const w=Math.round(src.width*scale),h=Math.round(src.height*scale);
+ cropCanvas.width=Math.round(w*dpr);cropCanvas.height=Math.round(h*dpr);
+ cropCanvas.style.width=w+"px";cropCanvas.style.height=h+"px";
+ cropCtx.setTransform(dpr,0,0,dpr,0,0);cropCtx.clearRect(0,0,w,h);cropCtx.drawImage(src,0,0,w,h);
+ cropDisplay={scale,ox:0,oy:0,w,h};
+ cropCtx.save();cropCtx.strokeStyle="#10d6b0";cropCtx.lineWidth=3;cropCtx.fillStyle="#07111caa";
+ cropCtx.beginPath();cropPoints.forEach((p,i)=>{const x=p.x*scale,y=p.y*scale;i?cropCtx.lineTo(x,y):cropCtx.moveTo(x,y)});cropCtx.closePath();cropCtx.stroke();
+ cropCtx.beginPath();cropCtx.moveTo(0,0);cropCtx.lineTo(w,0);cropCtx.lineTo(w,h);cropCtx.lineTo(0,h);cropCtx.closePath();
+ cropCtx.moveTo(cropPoints[0].x*scale,cropPoints[0].y*scale);cropPoints.forEach(p=>cropCtx.lineTo(p.x*scale,p.y*scale));cropCtx.closePath();cropCtx.fill("evenodd");
+ cropPoints.forEach((p,i)=>{const x=p.x*scale,y=p.y*scale;cropCtx.beginPath();cropCtx.arc(x,y,10,0,Math.PI*2);cropCtx.fillStyle="#ffffff";cropCtx.fill();cropCtx.lineWidth=3;cropCtx.strokeStyle="#059e87";cropCtx.stroke();cropCtx.fillStyle="#102030";cropCtx.font="bold 11px sans-serif";cropCtx.textAlign="center";cropCtx.textBaseline="middle";cropCtx.fillText(String(i+1),x,y)});
+ cropCtx.restore();
+}
+function openManualCrop(){
+ const p=state.pages[state.active];if(!p)return;
+ cropPage=p;const src=p.originalCanvas||p.canvas;
+ cropPoints=[{x:0,y:0},{x:src.width-1,y:0},{x:src.width-1,y:src.height-1},{x:0,y:src.height-1}];
+ $("#cropModal").hidden=false;requestAnimationFrame(drawCropEditor);
+}
+function cropPointer(e){
+ if(!cropPage)return;const r=cropCanvas.getBoundingClientRect(),x=(e.clientX-r.left)/cropDisplay.scale,y=(e.clientY-r.top)/cropDisplay.scale;
+ if(e.type==="pointerdown"){
+  let nearest=-1,dist=Infinity;cropPoints.forEach((p,i)=>{const d=Math.hypot(p.x-x,p.y-y);if(d<dist){dist=d;nearest=i}});
+  if(nearest>=0&&dist<Math.max(28,32/cropDisplay.scale)){dragPoint=nearest;cropCanvas.setPointerCapture(e.pointerId);e.preventDefault()}
+ }else if(e.type==="pointermove"&&dragPoint>=0){
+  const src=cropPage.originalCanvas||cropPage.canvas;cropPoints[dragPoint]={x:Math.max(0,Math.min(src.width-1,x)),y:Math.max(0,Math.min(src.height-1,y))};drawCropEditor();e.preventDefault()
+ }else if(e.type==="pointerup"||e.type==="pointercancel"){dragPoint=-1}
+}
+cropCanvas.addEventListener("pointerdown",cropPointer);cropCanvas.addEventListener("pointermove",cropPointer);cropCanvas.addEventListener("pointerup",cropPointer);cropCanvas.addEventListener("pointercancel",cropPointer);
+$("#manualCrop").onclick=openManualCrop;$("#closeCrop").onclick=()=>{$("#cropModal").hidden=true;cropPage=null};
+$("#resetCrop").onclick=()=>{if(!cropPage)return;const s=cropPage.originalCanvas||cropPage.canvas;cropPoints=[{x:0,y:0},{x:s.width-1,y:0},{x:s.width-1,y:s.height-1},{x:0,y:s.height-1}];drawCropEditor()};
+$("#applyCrop").onclick=async()=>{
+ if(!cropPage)return;
+ const ready=await waitForOpenCV();if(!ready){toast("Không tải được thư viện chỉnh phối cảnh");return}
+ const [tl,tr,br,bl]=cropPoints,dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+ const w=Math.round(Math.max(dist(tl,tr),dist(bl,br))),h=Math.round(Math.max(dist(tl,bl),dist(tr,br)));
+ if(w<80||h<80){toast("Vùng cắt quá nhỏ");return}
+ let src,from,to,transform,out;
+ try{
+  src=cv.imread(cropPage.originalCanvas||cropPage.canvas);
+  from=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
+  to=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,w-1,0,w-1,h-1,0,h-1]);
+  transform=cv.getPerspectiveTransform(from,to);out=new cv.Mat();
+  cv.warpPerspective(src,out,transform,new cv.Size(w,h),cv.INTER_CUBIC,cv.BORDER_REPLICATE,new cv.Scalar());
+  const result=document.createElement("canvas");result.width=out.cols;result.height=out.rows;cv.imshow(result,out);
+  cropPage.canvas=result;cropPage.originalCanvas=result;$("#cropModal").hidden=true;cropPage=null;refreshWorkspace();toast("Đã áp dụng vùng cắt thủ công");
+ }catch(err){console.error(err);toast("Không thể áp dụng vùng cắt")}
+ finally{[src,from,to,transform,out].forEach(m=>{try{if(m)m.delete()}catch(_){}})}
+};
+window.addEventListener("resize",()=>{if(!$("#cropModal").hidden)drawCropEditor()});
 function filteredCanvas(page){
  const source=page.canvas, c=document.createElement("canvas");c.width=source.width;c.height=source.height;
  const x=c.getContext("2d"), filter=page.filter||"color";
@@ -107,11 +166,11 @@ function refreshWorkspace(){
  const has=state.pages.length>0;$("#welcome").hidden=has;$("#workspace").hidden=!has;$("#savePdf").disabled=!has;
  if(has)showPage(Math.max(0,state.active));else renderPages();
 }
-function addCanvas(canvas,name="Trang"){
- state.pages.push({canvas,filter:"color",name});state.active=state.pages.length-1;
+function addCanvas(canvas,name="Trang",originalCanvas=canvas){
+ state.pages.push({canvas,originalCanvas,filter:"color",name});state.active=state.pages.length-1;
 }
-function imageToCanvas(file){return new Promise((resolve,reject)=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const scale=Math.min(1,2200/Math.max(img.naturalWidth,img.naturalHeight)),c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*scale);c.height=Math.round(img.naturalHeight*scale);c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);resolve(c)};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Không đọc được ảnh"))};img.src=url})}
-async function importFiles(files){const images=[...files].filter(f=>f.type.startsWith("image/"));if(!images.length)return;status("Đang thêm ảnh…");let added=0;for(const f of images){try{const original=await imageToCanvas(f),result=await autoCropDocument(original);addCanvas(result.canvas,f.name);added++;if(!result.cropped)console.info(result.reason)}catch(e){console.error(e)}}refreshWorkspace();status("Đã thêm "+added+" trang");toast("Đã thêm "+added+" trang")}
+function imageToCanvas(file){return new Promise((resolve,reject)=>{const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const c=document.createElement("canvas");c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);resolve(c)};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Không đọc được ảnh"))};img.src=url})}
+async function importFiles(files){const images=[...files].filter(f=>f.type.startsWith("image/"));if(!images.length)return;status("Đang thêm ảnh…");let added=0;for(const f of images){try{const original=await imageToCanvas(f),result=await autoCropDocument(original);addCanvas(result.canvas,f.name,original);added++;if(!result.cropped)console.info(result.reason)}catch(e){console.error(e)}}refreshWorkspace();status("Đã thêm "+added+" trang");toast("Đã thêm "+added+" trang")}
 $("#fileInput").onchange=e=>{importFiles(e.target.files);e.target.value=""};
 $("#addInput").onchange=e=>{importFiles(e.target.files);e.target.value=""};
 $("#prevPage").onclick=()=>showPage(state.active-1);$("#nextPage").onclick=()=>showPage(state.active+1);
@@ -130,7 +189,7 @@ $("#takePhoto").onclick=async()=>{
  const video=$("#video");if(!video.videoWidth){toast("Camera đang khởi động, vui lòng thử lại");return}
  const c=document.createElement("canvas");c.width=video.videoWidth;c.height=video.videoHeight;c.getContext("2d").drawImage(video,0,0,c.width,c.height);
  $("#takePhoto").disabled=true;$("#takePhoto").textContent="Đang căn mép giấy…";
- const result=await autoCropDocument(c);addCanvas(result.canvas,"Camera "+state.pages.length);$("#takePhoto").disabled=false;$("#takePhoto").textContent="◎ Chụp trang";$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";
+ const result=await autoCropDocument(c);addCanvas(result.canvas,"Camera "+state.pages.length,c);$("#takePhoto").disabled=false;$("#takePhoto").textContent="◎ Chụp trang";$("#cameraCount").textContent="Đã chụp "+state.pages.length+" trang";
  status("Đã chụp "+state.pages.length+" trang");refreshWorkspace();$("#cameraModal").hidden=false;
  toast(result.cropped?"Đã tự căn và cắt mép giấy — tiếp tục chụp":"Chưa nhận diện được mép giấy, giữ ảnh gốc — thử đặt giấy trên nền tương phản");
 };
@@ -146,7 +205,7 @@ $("#savePdf").onclick=async()=>{
    const pageW=pdf.internal.pageSize.getWidth(),pageH=pdf.internal.pageSize.getHeight(),margin=22;
    const scale=Math.min((pageW-margin*2)/c.width,(pageH-margin*2)/c.height);
    const w=c.width*scale,h=c.height*scale,x=(pageW-w)/2,y=(pageH-h)/2;
-   pdf.addImage(c.toDataURL("image/jpeg",.93),"JPEG",x,y,w,h,undefined,"FAST");
+   pdf.addImage(c.toDataURL("image/png"),"PNG",x,y,w,h,undefined,"NONE");
  }
  let name=($("#docName").value.trim()||"Tai_lieu_scan").replace(/[\\/:*?"<>|]/g,"_");if(!name.toLowerCase().endsWith(".pdf"))name+=".pdf";pdf.save(name);status("Đã lưu PDF gồm "+state.pages.length+" trang");toast("Đã lưu "+name+" ("+state.pages.length+" trang)");
  }catch(e){console.error(e);status("Không thể tạo PDF");toast(e.message||"Lỗi xuất PDF")}finally{$("#savePdf").disabled=!state.pages.length}
